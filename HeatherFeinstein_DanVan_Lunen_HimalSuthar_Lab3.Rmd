@@ -1,7 +1,7 @@
 ---
 title: 'Statistical Methods for Discrete Response, Time Series, and Panel Data (W271):
   Lab 3'
-author: "Professor Jeffrey Yau"
+author: "Heather Feinstein, Himal Suthar, Daniel Vanlunen"
 geometry: margin=1in
 output:
   pdf_document:
@@ -46,35 +46,130 @@ fontsize: 11pt
 
 Build a Seasonal ARIMA model and generate quarterly forecast for 2017. Make sure you use all the steps of building a univariate time series model between lecture 6 and 9, such as checking the raw data, conducting a thorough EDA, justifying all modeling decisions (including transformation), testing model assumptions, and clearly articulating why you chose your given model. Measure and discuss your model's performance. Use both in-sample and out-of-sample model performance. When estimating your model, exclude the series from 2015 and 2016. For the out-of-sample forecast, measure your model's performance in forecasting the quarterly E-Commerce retail sales in 2015 and 2016. Discuss the model performance. Also forecast beyond the observed time-period of the series. Specifically, generate quarterly forecast for 2017.
 
-```{r}
+```{r include=F}
 # Load required libraries
+library(tidyverse)
 library(car)
-library(dplyr)
 library(Hmisc)
-library(ggplot2)
 library(ggfortify)
 library(plotly)
 library(astsa)
 library(forecast)
 library(fpp2)
+library(gridExtra)
+library(urca)
 ```
+## EDA
+First we load and examine the raw data.
 
 ```{r}
-df <- read.csv("ECOMPCTNSA.csv", header = FALSE, sep=",")
+df <- read_csv("ECOMPCTNSA.csv")
 
 # Examine the data structure
-str(df)
-names(df)
 head(df)
-tail(df)
+summary(df)
+describe(df)
 
-# Convert it into a time serie object
-series1 <- ts(df$V1, start=c(2005,1), frequency = 12)
-
-# Examine the converted data structure
-str(series1)
-head(cbind(time(series1),series1))
+# Convert it into a time seriea object
+series1 <- ts(df$ECOMPCTNSA/100, start=c(1999,4), frequency = 4)
 ```
+
+There are no missing values. The data is quarterly from 1999Q4 to 2016Q4 with no missing quarters inbetween. The data lie between 0.7 and 9.5%.
+
+```{r}
+autoplot(decompose(series1)) +
+  labs(title="Decomposed E-Commerce Retail Sales as a Percent of Total Sales") +
+  scale_y_continuous(labels = scales::percent)
+
+series1 %>% ndiffs()
+```
+
+There is a clear upward trend in the data with fairly strong seasonal variation. It also has an increasing variance over time. The variance could be stablized by a transform (e.g. log seemed to do a good job stablizing the variance here), but could also be stablized by differencing as well. `ndiffs` indicates a first difference would be a good start according to the KPSS test.
+
+```{r}
+p1 = autoplot(acf(series1, plot = FALSE)) +
+  ggtitle("Correlation Functions")
+
+p2 = autoplot(pacf(series1, plot = FALSE)) +
+  ggtitle("")
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+The ACF also points to a strong trend given it remains highly significant for many lags. The PACF also indicates seasonality.
+
+Let's first attempt to remove the trend with differencing.
+
+```{r}
+series_diff1 <- diff(series1)
+autoplot(decompose(series_diff1)) +
+  labs(title="Decomposed, First Differenced\nE-Commerce Retail Sales as a Percent of Total Sales") +
+  scale_y_continuous(labels = scales::percent)
+series_diff1 %>% nsdiffs()
+```
+
+A lot of the trend is removed by the first difference, but there is still a strong seasonal component we can likely remove with a first order seasonal differencing. `nsdiffs` also indicates a single seasonal difference could help achieve stationarity:
+
+```{r}
+series_diff1_diff4 <- diff(series_diff1,4)
+autoplot(decompose(series_diff1_diff4)) +
+  labs(title="Decomposed, First Differenced, First-Order Seasonal Differenced\nE-Commerce Retail Sales as a Percent of Total Sales") +
+  scale_y_continuous(labels = scales::percent)
+
+series_diff1_diff4 %>% ur.kpss()
+```
+
+After these differences, the time series looks roughly stationary with not strong trend and roughly stable variance (so no need to transform the series). The KPSS test also indicates that there is not sufficient evidence to reject the null hypothesis that the data are stationary.
+
+```{r}
+
+p1 = autoplot(acf(series1_differenced, plot = FALSE)) +
+  ggtitle("Correlation Functions\nDifferenced Series")
+
+p2 = autoplot(pacf(series1_differenced, plot = FALSE)) +
+  ggtitle("")
+
+grid.arrange(p1, p2, ncol=2)
+
+
+```
+The pacf and acf of the differenced series are both significant at the first lag and another lag roughly 2 years back. This is inidicative of a low order $p$ and maybe $q$ to take care of the first lag and low order $P$ and $Q$ (perhaps 2 because the lags are about 2 years back) to take care of the later lag in our SARIMA model. 
+
+## Model Construction
+
+Our exploratory data analysis points to a SARIMA model with $d=1$ and $D=1$. It also points to maximum values of the other parameters as $p=1$, $q=1$, $P=2$, $Q=2$. Let's fit that model, a few around it with fewer parameters, and one with `auto.arima` to compare.
+
+```{r}
+# question requests fits using pre-2015 data
+series1_train <- series1 %>% window(end=c(2014,4))
+series1_test <- series1 %>% window(start=2015)
+
+# train models
+m_eda_max <- series1_train %>% Arima(order=c(1,1,1), seasonal = c(2,1,2), method='ML')
+m_111111 <- series1_train %>% Arima(order=c(1,1,1), seasonal = c(1,1,1), method='ML')
+m_110110 <- series1_train %>% Arima(order=c(1,1,0), seasonal = c(1,1,0), method='ML')
+m_010010 <- series1_train %>% Arima(order=c(0,1,0), seasonal = c(0,1,0), method='ML')
+m_auto_arima <- series1_train %>% auto.arima(stepwise=FALSE, approximation=FALSE)
+summary(m_auto_arima)
+
+m_forecast <- m_auto_arima %>% forecast(8)
+
+
+# function to evaluate models
+evaluate_model <- function(sarima_model){
+  m_forecast <- sarima_model %>% forecast(8)
+  rmse <- sqrt(mean((m_forecast$mean - series1_test)^2))
+  return(c(sarima_model$aic,sarima_model$aicc,sarima_model$bic,rmse))
+}
+
+models <- list(m_eda,m_111111,m_110110,m_010010,m_auto_arima)
+
+purrr::map(models,evaluate_model)
+
+```
+
+
+
 
 # Question 2: Learning how to use the xts library
 
@@ -132,6 +227,7 @@ rm(list = ls())
 library(knitr)
 opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
 ```
+
 
 ```{r}
 # Create a matrix
@@ -322,16 +418,20 @@ A very common operation on time series is to take a difference of the series to 
 
 Let's use the ```unemp_xts``` series as examples:
 ```{r}
-str(unemp_xts)
-unemp_xts
+# str(unemp_xts)
+# unemp_xts
  
-diff(unemp_xts, lag = 1, difference = 1, log = FALSE, na.pad = TRUE)
+# diff(unemp_xts, lag = 1, difference = 1, log = FALSE, na.pad = TRUE)
 
 # calculate the first difference of AirPass using lag and subtraction
 #AirPass - lag(AirPass, k = 1)
 
 # calculate the first order 12-month difference if AirPass
-diff(unemp_xts, lag = 12, differences = 1)
+# diff(unemp_xts, lag = 12, differences = 1)
+
+cbind(unemp_xts, 
+      diff(unemp_xts, lag = 1, difference = 1, log = FALSE, na.pad = TRUE),
+      diff(unemp_xts, lag = 12, differences = 1)) %>% head(20)
 ```
 
 # Task 4:
@@ -340,7 +440,7 @@ diff(unemp_xts, lag = 12, differences = 1)
     A. Section 3.4 of "xts: Extensible Time Series" by Jeffrey A. Ryan and Joshua M. Ulrich
     
     B. the following questions in "xts FAQ"
-        a. I am using apply() to run a custom function on my xts series. Why the returned matrix has di↵erent dimensions than the original one?
+        a. I am using apply() to run a custom function on my xts series. Why the returned matrix has different dimensions than the original one?
 
   2. Follow the following two sections of this document
 
@@ -359,7 +459,7 @@ As an example, we use the Twitter stock price series (to be precise, the daily c
 #View(TWTR)
 head(TWTR)
 TWTR_ep <- endpoints(TWTR[,4], on = "weeks")
-#TWTR_ep
+TWTR_ep
 
 # Step 2: Calculate the weekly mean
 TWTR.Close_weeklyMean <- period.apply(TWTR[, 4], INDEX = TWTR_ep, FUN = mean)
@@ -389,74 +489,157 @@ head(cbind(TWTR[,4], rollapply(TWTR[, 4], 10, FUN = mean, na.rm = TRUE)),15)
 ```
 
 # Task 5:
-1. Read AMAZ.csv and UMCSENT.csv into R as R DataFrames
-
-
+## 1. Read AMAZ.csv and UMCSENT.csv into R as R DataFrames
 ```{r}
-df1 <- read.csv("AMAZ.csv", header = FALSE, sep=",")
-df2 <- read.csv("UMCSENT.csv", header = FALSE, sep=",")
-
-# Examine the data structure df1
-str(df1)
-names(df1)
-head(df1)
-tail(df1)
-
-# Examine the data structure df2
-str(df1)
-names(df1)
-head(df1)
-tail(df1)
+AMAZ_df <- read_csv(file = 'AMAZ.csv')
+UMCSENT_df <- read_csv(file = 'UMCSENT.csv')
+AMAZ_df %>% head()
+UMCSENT_df %>% head()
 ```
 
-2. Convert them to xts objects
+## 2. Convert them to xts objects
 
 ```{r}
-
+AMAZ <- xts(x = AMAZ_df %>% select(-Index), order.by = AMAZ_df$Index)
+UMCSENT <- xts(x = UMCSENT_df$UMCSENT, order.by = UMCSENT_df$Index)
 ```
 
 
-3. Merge the two set of series together, perserving all of the obserbvations in both set of series
-    a. fill all of the missing values of the UMCSENT series with -9999
-  
-```{r}
+## 3. Merge the two set of series together, perserving all of the obserbvations in both set of series
 
-```
-  
-    b. then create a new series, named UMCSENT02, from the original  UMCSENT series replace all of the -9999 with NAs
+### a. fill all of the missing values of the UMCSENT series with -9999
 
 ```{r}
-
-```
-   
-    c. then create a new series, named UMCSENT03, and replace the NAs with the last observation
-   
-```{r}
-
+stocks <- merge.xts(AMAZ,UMCSENT,join = "outer", fill = -9999)
 ```
 
-    d. then create a new series, named UMCSENT04, and replace the NAs using linear interpolation.
+###  b. then create a new series, named UMCSENT02, from the original  UMCSENT series replace all of the -9999 with NAs
 
 ```{r}
-
+UMCSENT02 <- ifelse(stocks[,"UMCSENT"]==-9999, NA, stocks[,"UMCSENT"])
 ```
 
-    e. Print out some observations to ensure that your merge as well as the missing value imputation are done correctly. I leave it up to you to decide exactly how many observations to print; do something that makes sense. (Hint: Do not print out the entire dataset!)
+    
+### c. then create a new series, named UMCSENT03, and replace the NAs with the last observation
+
+My interpretation of "last" is the observation the latest in time that occurs before the target row that does not have an NA value.
 
 ```{r}
-
+UMCSENT03 <- na.locf(UMCSENT02) 
 ```
 
-4. Calculate the daily return of the Amazon closing price (AMAZ.close), where daily return is defined as $(x(t)-x(t-1))/x(t-1)$. Plot the daily return series.
+### d. then create a new series, named UMCSENT04, and replace the NAs using linear interpolation.
 
 ```{r}
-
+UMCSENT04 <- na.approx(UMCSENT02)
 ```
 
-
-5. Create a 20-day and a 50-day rolling mean series from the AMAZ.close series.
+### e. Print out some observations to ensure that your merge as well as the missing value imputation are done correctly. I leave it up to you to decide exactly how many observations to print; do something that makes sense. (Hint: Do not print out the entire dataset!)
 
 ```{r}
+stocks <- merge.xts(AMAZ,UMCSENT,join = "outer", fill = -9999)
+stocks <- merge.xts(stocks, UMCSENT02, UMCSENT03, UMCSENT04, fill = -9999)
+stocks['2009-01-01/2009-02-01']
+plot(stocks['2009-01-01/2009-02-01'][,"UMCSENT.3"],main="Linear Interpolation Check")
+```
+Printing the observations from january 2009 to the first day of Feb we see the values were fed forward. The plot shows the linear interpolation also occured correctly.
+
+## 4. Calculate the daily return of the Amazon closing price (AMAZ.close), where daily return is defined as $(x(t)-x(t-1))/x(t-1)$. Plot the daily return series.
+
+In order to get the daily return we need data at the daily level:
+
+```{r}
+# make another series with daily frequency that has a meaningless value
+#   purpose is to get stocks index to be daily
+date_range <- seq(as.Date(min(index(AMAZ))), as.Date(max(index(AMAZ))), by = "day")
+daily <- xts(rep(1,length(date_range)),order.by = date_range)
+stocks <- merge.xts(stocks,daily, fill = -9999)
+stocks %>% head()
+```
+
+```{r}
+plot(AMAZ[,'AMAZ.Close'])
+```
+
+
+Next we need to handle missing values for the Amazon close values. From the plot above it seems like the time series frequency is high enough that a linear interpolation would be a good approximation of the NA values:
+
+```{r}
+# pull close data for all days replacing -9999 with NA
+AMAZ.Close <- ifelse(stocks[,"AMAZ.Close"]==-9999, NA, stocks[,"AMAZ.Close"])
+# cut to range amazon had data for
+AMAZ.Close <- AMAZ.Close[paste0(min(index(AMAZ)),'/',max(index(AMAZ)))]
+# interpolate missing values
+AMAZ_fixed <- na.approx(AMAZ.Close)
+```
+
+Now we can calculate and plot the daily return.
+
+```{r warning=F}
+AMAZ_daily_return <- (AMAZ_fixed - lag(AMAZ_fixed))/lag(AMAZ_fixed)
+
+AMAZ_daily_return %>%
+  ggplot(aes(y=AMAZ.Close,x=index(AMAZ_daily_return))) +
+  geom_line() + scale_y_continuous(labels = scales::percent) +
+  labs(title="Amazon Daily Return",
+       subtitle=glue("from {min(index(AMAZ))} to {max(index(AMAZ))}"),
+       x="date",y="daily return")
 
 ```
 
+
+
+## 5. Create a 20-day and a 50-day rolling mean series from the AMAZ.close series.
+
+We choose to average over X-day intervals and just remove missing observations. That way we can interpret every point as the average of a range the same width even though each average may have a different number of points within it.
+
+```{r}
+# 20 day rolling average
+AMAZ_20_day_rolling_mean <- rollapply(AMAZ.Close, 20, FUN = mean, na.rm = TRUE)
+names(AMAZ_20_day_rolling_mean) <- "AMAZ.Close.20.Day.Rolling.Average"
+# 50 day
+AMAZ_50_day_rolling_mean <- rollapply(AMAZ.Close, 50, FUN = mean, na.rm = TRUE)
+names(AMAZ_50_day_rolling_mean) <- "AMAZ.Close.50.Day.Rolling.Average"
+# plot together
+AMAZ_close_w_means <- merge.xts(AMAZ.Close,AMAZ_20_day_rolling_mean,AMAZ_50_day_rolling_mean)
+plot(AMAZ_close_w_means,main="AMAZ Close Price with Rolling Averages", legend.loc='topright')
+legend("topright",
+       c("Actual Close Price", "20 Day Rolling Average", "50 Day Rolling Average"),
+       col = c(1,2,3)
+       )
+```
+
+
+# Dan Q1 old did log transform but didnt work out as well as just differencing
+
+
+First, let's see if we can stablize the variance by applying a log10 transform (we use base 10 to maintain interpretability though other bases performed similarly).
+```{r}
+df %>% 
+  ggplot(aes(x=DATE,y=ECOMPCTNSA/100)) +
+  geom_line()+
+  geom_smooth() +
+  labs(title="Log Stablizes Variance",
+       y="E-Commerce Retail Sales as a Percent of Total Sales") +
+scale_y_log10(labels = scales::percent)
+```
+
+The log transform does a good job of stablizing the variance. Now, let's see if a first difference will remove the trend.
+
+```{r}
+logseries1 <- ts(log10(df$ECOMPCTNSA/100), start=c(1999,10), frequency = 4)
+autoplot(decompose(diff(logseries1))) +
+  labs(title="Decomposed, First-Differenced, Log\nE-Commerce Retail Sales as a Percent of Total Sales")
+
+```
+
+A small trend remains, but much less than before and the differenced series largly matches the seasonal component series. This indicates we will likely need a seasonal difference as well. 
+
+```{r}
+# keep first diffed series
+logseries1_diff1 <- diff(logseries1)
+
+# add a seasonal difference
+autoplot(decompose(diff(logseries1_diff1,4)))
+autoplot(decompose(diff(diff(series1),4)))
+```
