@@ -58,6 +58,7 @@ library(forecast)
 library(fpp2)
 library(gridExtra)
 library(urca)
+library(glue)
 ```
 ## EDA
 First we load and examine the raw data.
@@ -122,15 +123,17 @@ series_diff1_diff4 %>% ur.kpss()
 After these differences, the time series looks roughly stationary with not strong trend and roughly stable variance (so no need to transform the series). The KPSS test also indicates that there is not sufficient evidence to reject the null hypothesis that the data are stationary.
 
 ```{r}
+plot_cfs <- function(ts,title){
+  p1 = autoplot(acf(ts, plot = FALSE)) +
+  ggtitle(title)
 
-p1 = autoplot(acf(series1_differenced, plot = FALSE)) +
-  ggtitle("Correlation Functions\nDifferenced Series")
-
-p2 = autoplot(pacf(series1_differenced, plot = FALSE)) +
+p2 = autoplot(pacf(ts, plot = FALSE)) +
   ggtitle("")
 
 grid.arrange(p1, p2, ncol=2)
+}
 
+plot_cfs(series_diff1_diff4,"Correlation Functions\nDifferenced Series")
 
 ```
 The pacf and acf of the differenced series are both significant at the first lag and another lag roughly 2 years back. This is inidicative of a low order $p$ and maybe $q$ to take care of the first lag and low order $P$ and $Q$ (perhaps 2 because the lags are about 2 years back) to take care of the later lag in our SARIMA model. 
@@ -145,30 +148,92 @@ series1_train <- series1 %>% window(end=c(2014,4))
 series1_test <- series1 %>% window(start=2015)
 
 # train models
-m_eda_max <- series1_train %>% Arima(order=c(1,1,1), seasonal = c(2,1,2), method='ML')
-m_111111 <- series1_train %>% Arima(order=c(1,1,1), seasonal = c(1,1,1), method='ML')
-m_110110 <- series1_train %>% Arima(order=c(1,1,0), seasonal = c(1,1,0), method='ML')
-m_010010 <- series1_train %>% Arima(order=c(0,1,0), seasonal = c(0,1,0), method='ML')
-m_auto_arima <- series1_train %>% auto.arima(stepwise=FALSE, approximation=FALSE)
-summary(m_auto_arima)
+  # all models up to the max according to EDA
+models <- list()
+i <- 1
+model_pdqPDQ <- c()
+num_params <- c()
+for (p in 0:1){
+  for (q in 0:1){
+    for (P in 0:2){
+      for (Q in 0:2){
+        models[[i]] <- series1_train %>% Arima(order=c(p,1,q),
+                                               seasonal = c(P,1,Q),
+                                               method='ML')
+        model_pdqPDQ <- c(model_pdqPDQ,
+                          glue("({p},1,{q})({P},1,{Q})"))
+        num_params <- c(num_params,p+1+q+P+1+Q)
+        i <- i+1
+      }
+    }
+  }
+}
+  # add the auto arima model
+auto.arima.model <- series1_train %>% auto.arima(stepwise=FALSE, approximation=FALSE)
+models[[i]] <- auto.arima.model
+model_pdqPDQ <- c(model_pdqPDQ, "auto.arima (0,1,1),(1,1,2)")
+num_params <- c(num_params,5)
 
-m_forecast <- m_auto_arima %>% forecast(8)
 
-
+# model evaluation
 # function to evaluate models
-evaluate_model <- function(sarima_model){
+evaluate_model <- function(sarima_model, model_pdqPDQ, num_params){
   m_forecast <- sarima_model %>% forecast(8)
   rmse <- sqrt(mean((m_forecast$mean - series1_test)^2))
-  return(c(sarima_model$aic,sarima_model$aicc,sarima_model$bic,rmse))
+  return(c(model_pdqPDQ,num_params,rmse,
+           sarima_model$aic,
+           sarima_model$aicc,
+           sarima_model$bic
+           ))
 }
+model_info <- tibble(
+  sarima_model=models,
+  model_pdqPDQ=model_pdqPDQ,
+  num_params=num_params
+)
 
-models <- list(m_eda,m_111111,m_110110,m_010010,m_auto_arima)
+model_info <- 
+  model_info %>%
+  pmap(evaluate_model) %>%
+  bind_cols() %>% 
+  t() %>% as.tibble()
+names(model_info) <- c("model","num_params","rmse for 2015-2016 prediction","aic","aicc","bic")
 
-purrr::map(models,evaluate_model)
-
+model_info %>% arrange(num_params,model)
 ```
 
+Auto arima finds the model with the best aic. The models with fewer parameters seem to do better on the out of sample forecast though. Let's take a look at the residuals.
 
+```{r}
+plot_cfs(series1_train %>% 
+           Arima(order=c(0,1,0), seasonal = c(2,1,0), method='ML') 
+         %>% residuals(),
+         "(0,1,0),(2,1,0) Residuals\nstill autocorrelated")
+
+plot_cfs(auto.arima.model %>% residuals(),
+         "Auto Arima (0,1,1),(1,1,2) Residuals\not autocorrelated")
+```
+
+Given the remaining autocorrelation on simpler models (only one shown above, both others checked appeared similar), we believe the auto.arima SARIMA(0,1,0),(1,1,1) model is best.
+
+```{r}
+checkresiduals(auto.arima.model)
+```
+
+The auto arima residuals look like white noise.
+
+## Forecast
+
+With our model, we now forecast through 2017.
+
+```{r}
+df %>% head()
+
+auto.arima.model %>% forecast(h=12) %>% autoplot() +
+  scale_y_continuous(labels = scales::percent)
+```
+
+The predictions seem to follow the trend very well.
 
 
 # Question 2: Learning how to use the xts library
