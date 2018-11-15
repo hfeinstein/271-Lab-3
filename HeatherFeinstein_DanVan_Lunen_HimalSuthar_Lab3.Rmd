@@ -75,23 +75,35 @@ describe(df)
 series1 <- ts(df$ECOMPCTNSA/100, start=c(1999,4), frequency = 4)
 ```
 
-There are no missing values. The data is quarterly from 1999Q4 to 2016Q4 with no missing quarters inbetween. The data lie between 0.7 and 9.5%.
+There are no missing values. The data is quarterly from 1999 Q4 to 2016 Q4 with no missing quarters in between. The data lie between 0.7 and 9.5%.
 
 ```{r}
-autoplot(decompose(series1)) +
+# question requests fits using pre-2015 data
+series1_train <- series1 %>% window(end=c(2014,4))
+series1_test <- series1 %>% window(start=2015)
+```
+
+```{r}
+autoplot(decompose(series1_train)) +
   labs(title="Decomposed E-Commerce Retail Sales as a Percent of Total Sales") +
   scale_y_continuous(labels = scales::percent)
 
 series1 %>% ndiffs()
 ```
 
-There is a clear upward trend in the data with fairly strong seasonal variation. It also has an increasing variance over time. The variance could be stablized by a transform (e.g. log seemed to do a good job stablizing the variance here), but could also be stablized by differencing as well. `ndiffs` indicates a first difference would be a good start according to the KPSS test.
+There is a clear upward trend in the data with fairly strong seasonal variation.  It also has an increasing variance over time. The variance could be stablized by a transform, but could also be stablized by differencing as well. 
 
 ```{r}
-p1 = autoplot(acf(series1, plot = FALSE)) +
+monthplot(series1_train)
+```
+
+The seasonal trend peaks in Q4.
+
+```{r}
+p1 = autoplot(acf(series1_train, plot = FALSE)) +
   ggtitle("Correlation Functions")
 
-p2 = autoplot(pacf(series1, plot = FALSE)) +
+p2 = autoplot(pacf(series1_train, plot = FALSE)) +
   ggtitle("")
 
 grid.arrange(p1, p2, ncol=2)
@@ -99,10 +111,45 @@ grid.arrange(p1, p2, ncol=2)
 
 The ACF also points to a strong trend given it remains highly significant for many lags. The PACF also indicates seasonality.
 
-Let's first attempt to remove the trend with differencing.
+First, let's see if we can stablize the variance by applying a log10 transform (we use base 10 to maintain interpretability though other bases performed similarly).
 
 ```{r}
-series_diff1 <- diff(series1)
+df %>% 
+  ggplot(aes(x=DATE,y=ECOMPCTNSA/100)) +
+  geom_line()+
+  geom_smooth() +
+  labs(title="Log Stablizes Variance",
+       y="E-Commerce Retail Sales as a Percent of Total Sales") +
+scale_y_log10(labels = scales::percent)
+```
+
+The log transform does a good job of stablizing the variance. Now, let's see if a first difference will remove the trend.
+
+```{r}
+logseries1 <- ts(log10(df$ECOMPCTNSA/100), start=c(1999,10), frequency = 4)
+
+# question requests fits using pre-2015 data
+logseries1_train <- series1 %>% window(end=c(2014,4))
+logseries1_test <- series1 %>% window(start=2015)
+
+autoplot(decompose(diff(logseries1_train))) +
+  labs(title="Decomposed, First-Differenced, Log\nE-Commerce Retail Sales as a Percent of Total Sales")
+```
+
+A small trend remains, but much less than before and the differenced series largly matches the seasonal component series. This indicates we will likely need a seasonal difference as well. 
+
+```{r}
+# keep first diffed series
+logseries1_diff1 <- diff(logseries1_train)
+
+# add a seasonal difference
+autoplot(decompose(diff(logseries1_diff1,4)))
+```
+
+Next lets attempt to remove the trend with differencing alone without the log tranformation. `ndiffs` indicated a first difference would be a good start according to the KPSS test.
+
+```{r}
+series_diff1 <- diff(series1_train)
 autoplot(decompose(series_diff1)) +
   labs(title="Decomposed, First Differenced\nE-Commerce Retail Sales as a Percent of Total Sales") +
   scale_y_continuous(labels = scales::percent)
@@ -120,7 +167,9 @@ autoplot(decompose(series_diff1_diff4)) +
 series_diff1_diff4 %>% ur.kpss()
 ```
 
-After these differences, the time series looks roughly stationary with not strong trend and roughly stable variance (so no need to transform the series). The KPSS test also indicates that there is not sufficient evidence to reject the null hypothesis that the data are stationary.
+After these differences, the time series looks roughly stationary with no strong trend and roughly stable variance (so no need to transform the series). The KPSS test also indicates that there is not sufficient evidence to reject the null hypothesis that the data are stationary.
+
+Comparing our transformed (log10) and differenced series to our differenced alone series we prefer the latter as the residuals look more stationary and both resulted in a stable variance.
 
 ```{r}
 plot_cfs <- function(ts,title){
@@ -134,7 +183,6 @@ grid.arrange(p1, p2, ncol=2)
 }
 
 plot_cfs(series_diff1_diff4,"Correlation Functions\nDifferenced Series")
-
 ```
 The pacf and acf of the differenced series are both significant at the first lag and another lag roughly 2 years back. This is inidicative of a low order $p$ and maybe $q$ to take care of the first lag and low order $P$ and $Q$ (perhaps 2 because the lags are about 2 years back) to take care of the later lag in our SARIMA model. 
 
@@ -143,10 +191,6 @@ The pacf and acf of the differenced series are both significant at the first lag
 Our exploratory data analysis points to a SARIMA model with $d=1$ and $D=1$. It also points to maximum values of the other parameters as $p=1$, $q=1$, $P=2$, $Q=2$. Let's fit that model, a few around it with fewer parameters, and one with `auto.arima` to compare.
 
 ```{r}
-# question requests fits using pre-2015 data
-series1_train <- series1 %>% window(end=c(2014,4))
-series1_test <- series1 %>% window(start=2015)
-
 # train models
   # all models up to the max according to EDA
 models <- list()
@@ -626,7 +670,6 @@ stocks %>% head()
 plot(AMAZ[,'AMAZ.Close'])
 ```
 
-
 Next we need to handle missing values for the Amazon close values. From the plot above it seems like the time series frequency is high enough that a linear interpolation would be a good approximation of the NA values:
 
 ```{r}
@@ -649,10 +692,7 @@ AMAZ_daily_return %>%
   labs(title="Amazon Daily Return",
        subtitle=glue("from {min(index(AMAZ))} to {max(index(AMAZ))}"),
        x="date",y="daily return")
-
 ```
-
-
 
 ## 5. Create a 20-day and a 50-day rolling mean series from the AMAZ.close series.
 
@@ -672,39 +712,4 @@ legend("topright",
        c("Actual Close Price", "20 Day Rolling Average", "50 Day Rolling Average"),
        col = c(1,2,3)
        )
-```
-
-
-# Dan Q1 old did log transform but didnt work out as well as just differencing
-
-
-First, let's see if we can stablize the variance by applying a log10 transform (we use base 10 to maintain interpretability though other bases performed similarly).
-```{r}
-df %>% 
-  ggplot(aes(x=DATE,y=ECOMPCTNSA/100)) +
-  geom_line()+
-  geom_smooth() +
-  labs(title="Log Stablizes Variance",
-       y="E-Commerce Retail Sales as a Percent of Total Sales") +
-scale_y_log10(labels = scales::percent)
-```
-
-The log transform does a good job of stablizing the variance. Now, let's see if a first difference will remove the trend.
-
-```{r}
-logseries1 <- ts(log10(df$ECOMPCTNSA/100), start=c(1999,10), frequency = 4)
-autoplot(decompose(diff(logseries1))) +
-  labs(title="Decomposed, First-Differenced, Log\nE-Commerce Retail Sales as a Percent of Total Sales")
-
-```
-
-A small trend remains, but much less than before and the differenced series largly matches the seasonal component series. This indicates we will likely need a seasonal difference as well. 
-
-```{r}
-# keep first diffed series
-logseries1_diff1 <- diff(logseries1)
-
-# add a seasonal difference
-autoplot(decompose(diff(logseries1_diff1,4)))
-autoplot(decompose(diff(diff(series1),4)))
 ```
