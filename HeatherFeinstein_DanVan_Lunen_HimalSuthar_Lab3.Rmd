@@ -60,6 +60,7 @@ library(gridExtra)
 library(urca)
 library(glue)
 ```
+
 ## EDA
 First we load and examine the raw data.
 
@@ -73,7 +74,6 @@ describe(df)
 
 # Convert it into a time seriea object
 series1 <- ts(df$ECOMPCTNSA/100, start=c(1999,4), frequency = 4)
-
 ```
 
 There are no missing values. The data is quarterly from 1999 Q4 to 2016 Q4 with no missing quarters in between. The data lie between 0.7 and 9.5%.
@@ -82,9 +82,7 @@ There are no missing values. The data is quarterly from 1999 Q4 to 2016 Q4 with 
 # question requests fits using pre-2015 data
 series1_train <- series1 %>% window(end=c(2014,4))
 series1_test <- series1 %>% window(start=2015)
-```
 
-```{r}
 autoplot(decompose(series1_train)) +
   labs(title="Decomposed E-Commerce Retail Sales as a Percent of Total Sales") +
   scale_y_continuous(labels = scales::percent)
@@ -94,13 +92,12 @@ series1 %>% ndiffs()
 
 There is a clear upward trend in the data with fairly strong seasonal variation.  It also has an increasing variance over time. The variance could be stablized by a transform, but could also be stablized by differencing as well. 
 
-```{r}
+```{r fig1, fig.height= 3}
 monthplot(series1_train)
 ```
 
 The seasonal trend peaks in Q4.
-
-```{r}
+```{r fig2, fig.height= 3}
 p1 = autoplot(acf(series1_train, plot = FALSE)) +
   ggtitle("Correlation Functions")
 
@@ -112,7 +109,7 @@ grid.arrange(p1, p2, ncol=2)
 
 The ACF also points to a strong trend given it remains highly significant for many lags. The PACF also indicates seasonality.
 
-Next lets attempt to remove the trend with differencing alone without the log tranformation. `ndiffs` indicated a first difference would be a good start according to the KPSS test.
+First we attempted a log transform to stabalize the variance which we followed with differencing. However we found that differencing alone produced more stationary residuals which you will find below.v`ndiffs` indicated a first difference would be a good start according to the KPSS test.
 
 ```{r}
 series_diff1 <- diff(series1_train)
@@ -122,7 +119,7 @@ autoplot(decompose(series_diff1)) +
 series_diff1 %>% nsdiffs()
 ```
 
-A lot of the trend is removed by the first difference, but there is still a strong seasonal component we can likely remove with a first order seasonal differencing. `nsdiffs` also indicates a single seasonal difference could help achieve stationarity:
+A lot of the trend is removed by the first difference, but there is still a strong seasonal component we can likely remove with a first order seasonal differencing. `nsdiffs` also indicates a single seasonal difference could help achieve stationarity.
 
 ```{r}
 series_diff1_diff4 <- diff(series_diff1,4)
@@ -135,9 +132,7 @@ series_diff1_diff4 %>% ur.kpss()
 
 After these differences, the time series looks roughly stationary with no strong trend and roughly stable variance (so no need to transform the series). The KPSS test also indicates that there is not sufficient evidence to reject the null hypothesis that the data are stationary.
 
-Comparing our transformed (log10) and differenced series to our differenced alone series we prefer the latter as the residuals look more stationary and both resulted in a stable variance.
-
-```{r}
+```{r fig3, fig.height= 3}
 plot_cfs <- function(ts,title){
   p1 = autoplot(acf(ts, plot = FALSE)) +
   ggtitle(title)
@@ -150,10 +145,10 @@ grid.arrange(p1, p2, ncol=2)
 
 plot_cfs(series_diff1_diff4,"Correlation Functions\nDifferenced Series")
 ```
+
 The pacf and acf of the differenced series are both significant at the first lag and another lag roughly 2 years back. This is inidicative of a low order $p$ and maybe $q$ to take care of the first lag and low order $P$ and $Q$ (perhaps 2 because the lags are about 2 years back) to take care of the later lag in our SARIMA model. 
 
 ## Model Construction
-
 Our exploratory data analysis points to a SARIMA model with $d=1$ and $D=1$. It also points to maximum values of the other parameters as $p=1$, $q=1$, $P=2$, $Q=2$. Let's fit that model, a few around it with fewer parameters, and one with `auto.arima` to compare.
 
 ```{r}
@@ -214,7 +209,7 @@ model_info %>% arrange(num_params,model)
 
 Auto arima finds the model with the best aic. The models with fewer parameters seem to do better on the out of sample forecast though. Let's take a look at the residuals.
 
-```{r}
+```{r fig4, fig.height= 3}
 plot_cfs(series1_train %>% 
            Arima(order=c(0,1,0), seasonal = c(2,1,0), method='ML') 
          %>% residuals(),
@@ -224,40 +219,24 @@ plot_cfs(auto.arima.model %>% residuals(),
          "Auto Arima (0,1,1),(1,1,2) Residuals\n not autocorrelated")
 ```
 
-Given the remaining autocorrelation on simpler models (only one shown above, both others checked appeared similar), we believe the auto.arima SARIMA(0,1,0),(1,1,1) model is best.
+Given the remaining autocorrelation on simpler models (only one shown above, both others checked appeared similar), we believe the auto.arima SARIMA(0,1,1),(1,1,1) model is best.
 
 ```{r}
 checkresiduals(auto.arima.model)
 ```
 
-The auto arima residuals look like white noise.  The residual time series plot looks approximately stationary and centered around 0.  This is confirmed by the histogram, which is centered around 0 and has an approximately normal distribution.  Finally, the ACF plot shows no significant correlations, indiciative of white noise.  
-
-We'll run a L-Jung Box test to test the stastical significance of the ACF plot.  
+The auto arima residuals look like white noise.  The residual time series plot looks approximately stationary and centered around 0.  This is confirmed by the histogram, which is centered around 0 and has an approximately normal distribution.  Finally, the ACF plot shows no significant correlations, indiciative of white noise. Based on LJung test, we cannot reject $H_0$ that there is no correlation bewteen the lag values and the current values. We'll also run a Shapiro-Wilk test to test the normality of the residuals.  
 
 ```{r}
-
-Box.test(auto.arima.model$residuals, lag = 24, type = c('Ljung-Box'))
-
-```
-
-Based on this test, we cannot reject $H_0$ that there is no correlation bewteen the lag values and the current values.  
-
-We'll also run a Shapiro-Wilk test to test the normality of the residuals.  
-
-```{r}
-
 shapiro.test(auto.arima.model$residuals)
-
 ```
 
 Based on this, we cannot reject $H_0$ that the distribution of the residuals is not statistically different from a normal distribution.  
 
 ## Forecast
-
 Let's first check the in-sample performance of our model:
 
 ```{r}
-
 # create time series of predicted in-samples values through 2016 Q4
 pred <- predict(auto.arima.model, n.ahead = 8)
 pred <-  ts(pred$pred, start = c(2015, 1), frequency = 4)
@@ -266,18 +245,13 @@ plot(series1, ylab = 'Original and Estimated Values', main = 'Original Series an
 lines(fitted.values(auto.arima.model), col = 'red', lty = 2)
 lines(pred, col = 'green', lty = 2 )
 legend('topleft', legend = c('Original', 'Estimated', 'Forecasted'), col = c('black', 'red', 'green'), lty = c(1,2,2), cex = .8)
-
 ```
 
-Based on the chart above, we see that our model's estimated values fit the training series (up to Q1, 2015) pretty well, with low deviation from the original values.  The forecasted values for the test set (2015 - 2016) also fit fairly well, following the overall trend and seasonality, though the forecast appears to slightly underestimate the true series especially in the seasonal low points.
-
-Let's now forecast through 2017 using our model.  
+Based on the chart above, we see that our model's estimated values fit the training series (up to Q1, 2015) pretty well, with low deviation from the original values.  The forecasted values for the test set (2015 - 2016) also fit fairly well, following the overall trend and seasonality, though the forecast appears to slightly underestimate the true series especially in the seasonal low points.Let's now forecast through 2017 using our model. 
 
 ```{r}
-
 auto.arima.model %>% forecast(h=12) %>% autoplot() +
   scale_y_continuous(labels = scales::percent)
-
 ```
 
 The predictions seem to follow the trend very well, with the forecasted values as well as the confidence bands following the trend and seasonality very closely.
