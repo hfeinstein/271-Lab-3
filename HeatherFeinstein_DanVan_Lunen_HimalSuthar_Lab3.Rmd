@@ -112,41 +112,6 @@ grid.arrange(p1, p2, ncol=2)
 
 The ACF also points to a strong trend given it remains highly significant for many lags. The PACF also indicates seasonality.
 
-First, let's see if we can stablize the variance by applying a log10 transform (we use base 10 to maintain interpretability though other bases performed similarly).
-
-```{r}
-df %>% 
-  ggplot(aes(x=DATE,y=ECOMPCTNSA/100)) +
-  geom_line()+
-  geom_smooth() +
-  labs(title="Log Stablizes Variance",
-       y="E-Commerce Retail Sales as a Percent of Total Sales") +
-scale_y_log10(labels = scales::percent)
-```
-
-The log transform does a good job of stablizing the variance. Now, let's see if a first difference will remove the trend.
-
-```{r}
-logseries1 <- ts(log10(df$ECOMPCTNSA/100), start=c(1999,10), frequency = 4)
-
-# question requests fits using pre-2015 data
-logseries1_train <- series1 %>% window(end=c(2014,4))
-logseries1_test <- series1 %>% window(start=2015)
-
-autoplot(decompose(diff(logseries1_train))) +
-  labs(title="Decomposed, First-Differenced, Log\nE-Commerce Retail Sales as a Percent of Total Sales")
-```
-
-A small trend remains, but much less than before and the differenced series largly matches the seasonal component series. This indicates we will likely need a seasonal difference as well. 
-
-```{r}
-# keep first diffed series
-logseries1_diff1 <- diff(logseries1_train)
-
-# add a seasonal difference
-autoplot(decompose(diff(logseries1_diff1,4)))
-```
-
 Next lets attempt to remove the trend with differencing alone without the log tranformation. `ndiffs` indicated a first difference would be a good start according to the KPSS test.
 
 ```{r}
@@ -265,7 +230,7 @@ Given the remaining autocorrelation on simpler models (only one shown above, bot
 checkresiduals(auto.arima.model)
 ```
 
-The auto arima residuals look like white noise.  The T plot looks approximately stationary and centered around 0.  This is confirmed by the histogram, which is centered around 0 and has an approximately normal distribution.  Finally, the ACF plot shows no significant correlations, indiciative of white noise.  
+The auto arima residuals look like white noise.  The residual time series plot looks approximately stationary and centered around 0.  This is confirmed by the histogram, which is centered around 0 and has an approximately normal distribution.  Finally, the ACF plot shows no significant correlations, indiciative of white noise.  
 
 We'll run a L-Jung Box test to test the stastical significance of the ACF plot.  
 
@@ -299,20 +264,20 @@ pred <-  ts(pred$pred, start = c(2015, 1), frequency = 4)
 
 plot(series1, ylab = 'Original and Estimated Values', main = 'Original Series and Estimated')
 lines(fitted.values(auto.arima.model), col = 'red', lty = 2)
-lines(pred1, col = 'green', lty = 2 )
+lines(pred, col = 'green', lty = 2 )
 legend('topleft', legend = c('Original', 'Estimated', 'Forecasted'), col = c('black', 'red', 'green'), lty = c(1,2,2), cex = .8)
 
 ```
 
-Based on thechart above, we see that our model's estimated values fit the training series (up to Q1, 2015) pretty well, with low deviation from the origianl values.  The forecasted values for the test set (2015 - 2016) also fit fairly well, following the overall trend and seasonality, though there seems to be more variance between the original values and the forecasted values. 
+Based on the chart above, we see that our model's estimated values fit the training series (up to Q1, 2015) pretty well, with low deviation from the original values.  The forecasted values for the test set (2015 - 2016) also fit fairly well, following the overall trend and seasonality, though the forecast appears to slightly underestimate the true series especially in the seasonal low points.
 
 Let's now forecast through 2017 using our model.  
 
 ```{r}
-df %>% head()
 
 auto.arima.model %>% forecast(h=12) %>% autoplot() +
   scale_y_continuous(labels = scales::percent)
+
 ```
 
 The predictions seem to follow the trend very well, with the forecasted values as well as the confidence bands following the trend and seasonality very closely.
@@ -347,7 +312,7 @@ The predictions seem to follow the trend very well, with the forecasted values a
   - is an extended zoo object
   - is essentially matrix + (time-based) index (aka, observation + time)
 
-  - xts is a constructor or a subclass that inherits behavior from parent (zoo); in fact, it extends the popular zoo class. As such. most zoo methods work for xts
+  - xts is a constructor or a subclass that inherits behavior from parent (zoo); in fact, it extends the popular zoo class. As such, most zoo methods work for xts
   - is a matrix objects; subsets always preserve the matrix form
   - importantly, xts are indexed by a formal time object. Therefore, the data is time-stamped
   - The two most important arguments are ```x``` for the data and ```order.by``` for the index. ```x``` must be a vector or matrix. ```order.by``` is a vector of the same length or number of rows of ```x```; it must be a proper time or date object and be in an increasing order
@@ -639,8 +604,8 @@ head(cbind(TWTR[,4], rollapply(TWTR[, 4], 10, FUN = mean, na.rm = TRUE)),15)
 ```{r}
 AMAZ_df <- read_csv(file = 'AMAZ.csv')
 UMCSENT_df <- read_csv(file = 'UMCSENT.csv')
-AMAZ_df %>% head()
-UMCSENT_df %>% head()
+head(AMAZ_df)
+head(UMCSENT_df)
 ```
 
 ## 2. Convert them to xts objects
