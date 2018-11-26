@@ -5,7 +5,6 @@ author: "Heather Feinstein, Himal Suthar, Daniel Vanlunen"
 geometry: margin=1in
 output:
   pdf_document:
-    latex_engine: xelatex
   number_sections: yes
   html_document: default
   toc: yes
@@ -42,10 +41,6 @@ fontsize: 11pt
 
 # Question 1: Forecasting using a SARIMA model
 
-*ECOMPCTNSA.csv*, contains quarterly data of E-Commerce Retail Sales as a Percent of Total Sales. The data can be found at: https://fred.stlouisfed.org/series/ECOMPCTNSA.
-
-Build a Seasonal ARIMA model and generate quarterly forecast for 2017. Make sure you use all the steps of building a univariate time series model between lecture 6 and 9, such as checking the raw data, conducting a thorough EDA, justifying all modeling decisions (including transformation), testing model assumptions, and clearly articulating why you chose your given model. Measure and discuss your model's performance. Use both in-sample and out-of-sample model performance. When estimating your model, exclude the series from 2015 and 2016. For the out-of-sample forecast, measure your model's performance in forecasting the quarterly E-Commerce retail sales in 2015 and 2016. Discuss the model performance. Also forecast beyond the observed time-period of the series. Specifically, generate quarterly forecast for 2017.
-
 ```{r include=F}
 # Load required libraries
 library(tidyverse)
@@ -59,6 +54,7 @@ library(fpp2)
 library(gridExtra)
 library(urca)
 library(glue)
+options(tibble.print_max = Inf)
 ```
 
 ## EDA
@@ -82,11 +78,9 @@ There are no missing values. The data is quarterly from 1999 Q4 to 2016 Q4 with 
 # question requests fits using pre-2015 data
 series1_train <- series1 %>% window(end=c(2014,4))
 series1_test <- series1 %>% window(start=2015)
-
 autoplot(decompose(series1_train)) +
   labs(title="Decomposed E-Commerce Retail Sales as a Percent of Total Sales") +
   scale_y_continuous(labels = scales::percent)
-
 series1 %>% ndiffs()
 ```
 
@@ -100,10 +94,8 @@ The seasonal trend peaks in Q4.
 ```{r fig2, fig.height= 3}
 p1 = autoplot(acf(series1_train, plot = FALSE)) +
   ggtitle("Correlation Functions")
-
 p2 = autoplot(pacf(series1_train, plot = FALSE)) +
   ggtitle("")
-
 grid.arrange(p1, p2, ncol=2)
 ```
 
@@ -126,7 +118,6 @@ series_diff1_diff4 <- diff(series_diff1,4)
 autoplot(decompose(series_diff1_diff4)) +
   labs(title="Decomposed, First Differenced, First-Order Seasonal Differenced\nE-Commerce Retail Sales as a Percent of Total Sales") +
   scale_y_continuous(labels = scales::percent)
-
 series_diff1_diff4 %>% ur.kpss()
 ```
 
@@ -136,20 +127,17 @@ After these differences, the time series looks roughly stationary with no strong
 plot_cfs <- function(ts,title){
   p1 = autoplot(acf(ts, plot = FALSE)) +
   ggtitle(title)
-
 p2 = autoplot(pacf(ts, plot = FALSE)) +
   ggtitle("")
-
 grid.arrange(p1, p2, ncol=2)
 }
-
 plot_cfs(series_diff1_diff4,"Correlation Functions\nDifferenced Series")
 ```
 
 The pacf and acf of the differenced series are both significant at the first lag and another lag roughly 2 years back. This is inidicative of a low order $p$ and maybe $q$ to take care of the first lag and low order $P$ and $Q$ (perhaps 2 because the lags are about 2 years back) to take care of the later lag in our SARIMA model. 
 
 ## Model Construction
-Our exploratory data analysis points to a SARIMA model with $d=1$ and $D=1$. It also points to maximum values of the other parameters as $p=1$, $q=1$, $P=2$, $Q=2$. Let's fit that model, a few around it with fewer parameters, and one with `auto.arima` to compare.
+Our exploratory data analysis points to a SARIMA model with $d=1$ and $D=1$. It also points to maximum values of the other parameters as $p=1$, $q=1$, $P=2$, $Q=2$. Let's fit that model and all more parsimonious models, and one with `auto.arima` to compare.
 
 ```{r}
 # train models
@@ -158,10 +146,7 @@ models <- list()
 i <- 1
 model_pdqPDQ <- c()
 num_params <- c()
-for (p in 0:1){
-  for (q in 0:1){
-    for (P in 0:2){
-      for (Q in 0:2){
+for (p in 0:1){for (q in 0:1){for (P in 0:2){for (Q in 0:2){
         models[[i]] <- series1_train %>% Arima(order=c(p,1,q),
                                                seasonal = c(P,1,Q),
                                                method='ML')
@@ -169,22 +154,17 @@ for (p in 0:1){
                           glue("({p},1,{q})({P},1,{Q})"))
         num_params <- c(num_params,p+1+q+P+1+Q)
         i <- i+1
-      }
-    }
-  }
-}
-  # add the auto arima model
+        }}}}
+# add the auto arima model
 auto.arima.model <- series1_train %>% auto.arima(stepwise=FALSE, approximation=FALSE)
 models[[i]] <- auto.arima.model
 model_pdqPDQ <- c(model_pdqPDQ, "auto.arima (0,1,1),(1,1,2)")
 num_params <- c(num_params,5)
-
-
 # model evaluation
 # function to evaluate models
 evaluate_model <- function(sarima_model, model_pdqPDQ, num_params){
   m_forecast <- sarima_model %>% forecast(8)
-  rmse <- sqrt(mean((m_forecast$mean - series1_test)^2))
+  rmse <- round(sqrt(mean((m_forecast$mean - series1_test)^2)),5)
   return(c(model_pdqPDQ,num_params,rmse,
            sarima_model$aic,
            sarima_model$aicc,
@@ -194,20 +174,15 @@ evaluate_model <- function(sarima_model, model_pdqPDQ, num_params){
 model_info <- tibble(
   sarima_model=models,
   model_pdqPDQ=model_pdqPDQ,
-  num_params=num_params
-)
-
-model_info <- 
-  model_info %>%
+  num_params=num_params) %>%
   pmap(evaluate_model) %>%
   bind_cols() %>% 
   t() %>% as.tibble()
-names(model_info) <- c("model","num_params","rmse for 2015-2016 prediction","aic","aicc","bic")
-
-model_info %>% arrange(num_params,model)
+names(model_info) <- c("model","num_params","rmse 2015-2016","aic","aicc","bic")
+model_info %>% arrange(num_params,model) %>% select(-num_params,-aicc) %>% print(Inf)
 ```
 
-Auto arima finds the model with the best aic. The models with fewer parameters seem to do better on the out of sample forecast though. Let's take a look at the residuals.
+Auto arima finds the model with the best aic. The models with fewer parameters seem to do better on the out of sample forecast though. Let's take a look at the residuals for a simple model and the auto-arima model.
 
 ```{r fig4, fig.height= 3}
 plot_cfs(series1_train %>% 
@@ -219,7 +194,7 @@ plot_cfs(auto.arima.model %>% residuals(),
          "Auto Arima (0,1,1),(1,1,2) Residuals\n not autocorrelated")
 ```
 
-Given the remaining autocorrelation on simpler models (only one shown above, both others checked appeared similar), we believe the auto.arima SARIMA(0,1,1),(1,1,1) model is best.
+Given the remaining autocorrelation on simpler models (only one shown above, but others checked appeared similar), lowest aic, and mid-range RMSE, we believe the auto.arima SARIMA(0,1,1),(1,1,2) model is best.
 
 ```{r}
 checkresiduals(auto.arima.model)
@@ -234,27 +209,23 @@ shapiro.test(auto.arima.model$residuals)
 Based on this, we cannot reject $H_0$ that the distribution of the residuals is not statistically different from a normal distribution.  
 
 ## Forecast
-Let's first check the in-sample performance of our model:
-
-```{r}
-# create time series of predicted in-samples values through 2016 Q4
-pred <- predict(auto.arima.model, n.ahead = 8)
-pred <-  ts(pred$pred, start = c(2015, 1), frequency = 4)
-
-plot(series1, ylab = 'Original and Estimated Values', main = 'Original Series and Estimated')
-lines(fitted.values(auto.arima.model), col = 'red', lty = 2)
-lines(pred, col = 'green', lty = 2 )
-legend('topleft', legend = c('Original', 'Estimated', 'Forecasted'), col = c('black', 'red', 'green'), lty = c(1,2,2), cex = .8)
-```
-
-Based on the chart above, we see that our model's estimated values fit the training series (up to Q1, 2015) pretty well, with low deviation from the original values.  The forecasted values for the test set (2015 - 2016) also fit fairly well, following the overall trend and seasonality, though the forecast appears to slightly underestimate the true series especially in the seasonal low points.Let's now forecast through 2017 using our model. 
+The following plot shows how our model's forecasts compare to the true series.
 
 ```{r}
 auto.arima.model %>% forecast(h=12) %>% autoplot() +
-  scale_y_continuous(labels = scales::percent)
+  geom_line(data=tibble(vals=series1,time=time(series1)),
+            aes(x=time,y=vals, color='red'),size=1) +
+  geom_line(data=tibble(vals=auto.arima.model$fitted,
+                        time=time(series1_train)),
+            aes(x=time,y=vals), color='blue',linetype='dotted') +
+  guides(color=F) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title='SARIMA(0,1,1)(1,1,2) Forecasts Fit Well',
+       subtitle='true series in red, in-sample fit in dotted blue, forecasts in solid blue')
 ```
 
-The predictions seem to follow the trend very well, with the forecasted values as well as the confidence bands following the trend and seasonality very closely.
+
+Based on the chart above, we see that our model's estimated values fit the training series (up to Q1, 2015) pretty well, with low deviation from the original values.  The forecasted values for the test set (2015 - 2016) also fit fairly well, following the overall trend and seasonality, though the forecast appears to slightly underestimate the true series out of sample especially in the seasonal low points. The forecast through 2017 (where the true, red line no longer shows) continues to follow the same trend well, with the forecasted values and the confidence bands following the trend and seasonality.
 
 # Question 2: Learning how to use the xts library
 
